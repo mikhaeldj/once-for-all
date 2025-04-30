@@ -1,8 +1,6 @@
 import random
 
 from ofa.imagenet_classification.elastic_nn.modules.dynamic_layers import (
-    DynamicConvLayer,
-    DynamicLinearLayer,
     DinamicLinearMapper,
     DynamicCLSToken,
     DynamicPositionalEmbedding,
@@ -10,7 +8,7 @@ from ofa.imagenet_classification.elastic_nn.modules.dynamic_layers import (
 from ofa.imagenet_classification.elastic_nn.modules.dynamic_layers import (
     DynamicTransfromerBlock,
 )
-from ofa.utils.layers import IdentityLayer, ResidualBlock
+from ofa.utils.layers import SimpleLinearLayer
 from ofa.imagenet_classification.networks import ViT
 from ofa.utils import make_divisible, val2list, MyNetwork
 
@@ -32,10 +30,8 @@ class OFAViT(ViT):
         self.depth_list = [2, 3, 4, 5, 6]
         self.width_mult_list = [2, 4, 8, 16]
         #self.patch_size_list =[2, 4, 8, 14, 16, 28, 56, 112] # with image_size = 224
-        # sort
-        #self.heads_list.sort()
-        #self.width_mult_list.sort()
 
+        # max
         self.max_heads = max(self.heads_list)
         self.max_depth = max(self.depth_list)
         self.max_width_mult = max(self.width_mult_list)
@@ -73,7 +69,7 @@ class OFAViT(ViT):
             blocks.append(transformer_block)
 
         # classifier
-        classifier = DynamicLinearLayer(
+        classifier = SimpleLinearLayer(
             dim, n_classes, dropout_rate=dropout_rate
         )
 
@@ -83,11 +79,14 @@ class OFAViT(ViT):
     def name():
         return "OFAViT"
 
-    def forward(self, x):
+    def forward(self, x, active_heads = None, active_width_mult = None, active_depth = None):
+        if active_depth is None:
+            active_depth = self.max_depth
+
         for layer in self.input_stem:
             x = layer(x)
-        for block in self.blocks:
-            x = block(x)
+        for block in self.blocks[:active_depth]:
+            x = block(x, active_heads, active_width_mult)
         x = self.classifier(x)
         return x
 

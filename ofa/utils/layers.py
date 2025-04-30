@@ -20,6 +20,7 @@ __all__ = [
     "MBConvLayer",
     "ResidualBlock",
     "ResNetBottleneckBlock",
+    "SimpleLinearLayer",
 ]
 
 
@@ -502,12 +503,7 @@ class MBConvLayer(MyModule):
             self.inverted_bottleneck = nn.Sequential(
                 OrderedDict(
                     [
-                        (
-                            "conv",
-                            nn.Conv2d(
-                                self.in_channels, feature_dim, 1, 1, 0, bias=False
-                            ),
-                        ),
+                        ("conv", nn.Conv2d(self.in_channels, feature_dim, 1, 1, 0, bias=False),),
                         ("bn", nn.BatchNorm2d(feature_dim)),
                         ("act", build_activation(self.act_func, inplace=True)),
                     ]
@@ -817,3 +813,27 @@ class ResNetBottleneckBlock(MyModule):
     @staticmethod
     def build_from_config(config):
         return ResNetBottleneckBlock(**config)
+
+class SimpleLinearLayer(MyModule):
+    def __init__(self, max_in_features, out_features, bias=True, dropout_rate=0):
+        super(SimpleLinearLayer, self).__init__()
+
+        self.max_in_features = max_in_features
+        self.out_features = out_features
+        self.bias = bias
+        self.dropout_rate = dropout_rate
+
+        if self.dropout_rate > 0:
+            self.dropout = nn.Dropout(self.dropout_rate, inplace=True)
+        else:
+            self.dropout = None
+        self.linear = nn.Linear(
+            max_in_features,
+            out_features,
+            bias=self.bias,
+        )
+
+    def forward(self, x):
+        if self.dropout is not None:
+            x = self.dropout(x)
+        return self.linear(x)
