@@ -29,8 +29,13 @@ from .dynamic_op import (
     DynamicBatchNorm2d,
     DynamicSE,
     DynamicGroupNorm,
+    DynamicAttention,
+    DynamicFeedForward,
 )
 from .dynamic_op import DynamicLinear
+
+from einops import rearrange, repeat
+from einops.layers.torch import Rearrange
 
 __all__ = [
     "adjust_bn_according_to_idx",
@@ -39,6 +44,10 @@ __all__ = [
     "DynamicConvLayer",
     "DynamicLinearLayer",
     "DynamicResNetBottleneckBlock",
+    "DinamicLinearMapper",
+    "DynamicCLSToken",
+    "DynamicPositionalEmbedding",
+    "DynamicTransfromerBlock"
 ]
 
 
@@ -63,7 +72,7 @@ def copy_bn(target_bn, src_bn):
         target_bn.running_mean.data.copy_(src_bn.running_mean.data[:feature_dim])
         target_bn.running_var.data.copy_(src_bn.running_var.data[:feature_dim])
 
-
+'''
 class DynamicLinearLayer(MyModule):
     def __init__(self, in_features_list, out_features, bias=True, dropout_rate=0):
         super(DynamicLinearLayer, self).__init__()
@@ -131,7 +140,7 @@ class DynamicLinearLayer(MyModule):
             "bias": self.bias,
             "dropout_rate": self.dropout_rate,
         }
-
+'''
 
 class DynamicMBConvLayer(MyModule):
     def __init__(
@@ -641,7 +650,7 @@ class DynamicResNetBottleneckBlock(MyModule):
         self.active_out_channel = max(self.out_channel_list)
 
     def forward(self, x):
-        feature_dim = self.active_middle_channels
+        feature_dim = self.active_middle_channels                       
 
         self.conv1.conv.active_out_channel = feature_dim
         self.conv2.conv.active_out_channel = feature_dim
@@ -839,3 +848,176 @@ class DynamicResNetBottleneckBlock(MyModule):
         )
 
         return None
+    
+
+class DinamicLinearMapper(MyModule):
+    def __init__(
+        self,
+        max_dim,
+        image_size,
+        patch_size,
+    ):
+        super(DinamicLinearMapper, self).__init__()
+
+        patch_dim = 3 * patch_size * patch_size
+
+        self.dim = max_dim
+        self.image_size = image_size
+        self.patch_size = patch_size
+
+        # self.patchify = nn.Sequential(
+        #     rearrange('b c (h p) (w p) -> b (h w) (p p c)', p = patch_size),
+        #     nn.LayerNorm(patch_dim),
+        #     nn.Linear(patch_dim, dim),
+        #     nn.LayerNorm(dim),
+        # )
+
+        self.rearrange = rearrange('b c (h p) (w p) -> b (h w) (p p c)', p = patch_size)
+        self.norm = nn.LayerNorm(patch_dim)
+        self.linear = DynamicLinear(patch_dim, max_dim)
+        self.norm_out = nn.LayerNorm(max_dim)
+
+    def forward(self, x):
+        x = self.rearrange(x)
+        x = self.norm(x)
+        x = self.linear(x)
+        x = self.norm_out(x)
+        return x
+    
+class DynamicCLSToken(MyModule):
+    def __init__(
+        self,
+        dim,
+    ):
+        super(DynamicCLSToken, self).__init__()
+
+        self.dim = dim
+        self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
+    
+    def forward(self, x):
+        batch_size = x.shape[0]
+        cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b=batch_size)
+        x = torch.cat((cls_tokens, x), dim=1)
+        return x
+    
+class DynamicPositionalEmbedding(MyModule):
+    def __init__(
+        self,
+        dim,
+        image_size,
+        patch_size,
+    ):
+        super(DynamicPositionalEmbedding, self).__init__()
+
+        self.dim = dim
+        self.image_size = image_size
+        self.patch_size = patch_size
+
+        self.num_patches = 1 + (image_size // patch_size) ** 2
+
+        self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches, dim))
+
+    def forward(self, x):
+        x = x + self.pos_embedding[:, :self.num_patches]
+        return x
+
+class DynamicTransfromerBlock(MyModule):
+    def __init__(
+        self,
+        dim,
+        depth,
+        heads,
+        dim_head,
+        width_mult,
+        dropout = 0.,
+        act_func = 'gelu',
+    ):
+        super(DynamicTransfromerBlock, self).__init__()
+
+        self.dim = dim
+        self.depth = depth
+        self.heads = heads
+        self.dim_head = dim_head
+        self.hidden_dim = width_mult
+        self.dropout = dropout
+
+        self.norm = nn.LayerNorm(dim)
+        
+        self.attention = DynamicAttention(dim, heads = heads, dim_head = dim_head, dropout = dropout),
+        self.feedforward = DynamicFeedForward(dim, width_mult, act_func, dropout = dropout)
+        
+    def forward(self, x, active_heads = None, active_width_mult = None):
+        x = self.attention(x, active_heads)
+        x = self.feedforward(x, active_width_mult)
+        return self.norm(x)
+    
+class DynamicLinearLayer(MyModule):
+    def __init__(self, max_in_features, out_features, bias=True, dropout_rate=0):
+        super(DynamicLinearLayer, self).__init__()
+
+        self.max_in_features = max_in_features
+        self.out_features = out_features
+        self.bias = bias
+        self.dropout_rate = dropout_rate
+
+        if self.dropout_rate > 0:
+            self.dropout = nn.Dropout(self.dropout_rate, inplace=True)
+        else:
+            self.dropout = None
+        self.linear = DynamicLinear(
+            max_in_features,
+            out_features,
+            bias=self.bias,
+        )
+
+    def forward(self, x):
+        if out_features is None:
+            out_features = self.active_out_features
+
+        if self.dropout is not None:
+            x = self.dropout(x)
+        return self.linear(x, active_in_features=self.max_in_features)
+
+    @property
+    def module_str(self):
+        return "DyLinear(%d, %d)" % (max(self.in_features_list), self.out_features)
+
+    @property
+    def config(self):
+        return {
+            "name": DynamicLinear.__name__,
+            "in_features_list": self.in_features_list,
+            "out_features": self.out_features,
+            "bias": self.bias,
+            "dropout_rate": self.dropout_rate,
+        }
+
+    @staticmethod
+    def build_from_config(config):
+        return DynamicLinearLayer(**config)
+
+    def get_active_subnet(self, in_features, preserve_weight=True):
+        sub_layer = LinearLayer(
+            in_features, self.out_features, self.bias, dropout_rate=self.dropout_rate
+        )
+        sub_layer = sub_layer.to(get_net_device(self))
+        if not preserve_weight:
+            return sub_layer
+
+        sub_layer.linear.weight.data.copy_(
+            self.linear.get_active_weight(self.out_features, in_features).data
+        )
+        if self.bias:
+            sub_layer.linear.bias.data.copy_(
+                self.linear.get_active_bias(self.out_features).data
+            )
+        return sub_layer
+
+    def get_active_subnet_config(self, in_features):
+        return {
+            "name": LinearLayer.__name__,
+            "in_features": in_features,
+            "out_features": self.out_features,
+            "bias": self.bias,
+            "dropout_rate": self.dropout_rate,
+        }

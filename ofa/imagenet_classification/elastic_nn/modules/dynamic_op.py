@@ -7,6 +7,9 @@ import torch.nn as nn
 import torch
 from torch.nn.parameter import Parameter
 
+from einops import rearrange, repeat
+from einops.layers.torch import Rearrange
+
 from ofa.utils import (
     get_same_padding,
     sub_filter_start_end,
@@ -24,6 +27,8 @@ __all__ = [
     "DynamicGroupNorm",
     "DynamicSE",
     "DynamicLinear",
+    "DynamicAttention",
+    "DynamicFeedForward",
 ]
 
 
@@ -369,7 +374,131 @@ class DynamicSE(SEModule):
 
         return x * y
 
+'''
+class DynamicLinear(nn.Module):
+    def __init__(self, max_in_features, max_out_features, bias=True):
+        super(DynamicLinear, self).__init__()
 
+        self.max_in_features = max_in_features
+        self.max_out_features = max_out_features
+        self.bias = bias
+
+        self.linear = nn.Linear(self.max_in_features, self.max_out_features, self.bias)
+
+        self.active_out_features = self.max_out_features
+
+    def get_active_weight(self, out_features, in_features):
+        return self.linear.weight[:out_features, :in_features]
+
+    def get_active_bias(self, out_features):
+        return self.linear.bias[:out_features] if self.bias else None
+
+    def forward(self, x, out_features=None):
+        if out_features is None:
+            out_features = self.active_out_features
+
+        in_features = x.size(1)
+        weight = self.get_active_weight(out_features, in_features).contiguous()
+        bias = self.get_active_bias(out_features)
+        y = F.linear(x, weight, bias)
+        return y
+'''
+
+class DynamicAttention(nn.Module):
+    def __init__(self, dim, heads, dim_head, dropout=0.0):
+        super(DynamicAttention, self).__init__()
+        inner_dim = dim_head * heads
+        project_out = not (heads == 1 and dim_head == dim)
+
+        self.dim = dim
+        self.heads = heads
+        self.dim_head = dim_head
+        self.scale = dim_head ** -0.5
+
+        self.norm = nn.LayerNorm(dim)
+
+        self.attend = nn.Softmax(dim=-1)
+        self.dropout = nn.Dropout(dropout)
+
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
+
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim, dim),
+            nn.Dropout(dropout)
+        ) if project_out else nn.Identity()
+
+    def get_active_heads(self, q, k, v, active_heads):
+        # Select only the active heads
+        q = q[:, :active_heads, :, :]
+        k = k[:, :active_heads, :, :]
+        v = v[:, :active_heads, :, :]
+        return q, k, v
+    
+    def forward(self, x, active_heads=None):
+        if active_heads is None:
+            active_heads = self.heads
+
+        x = self.norm(x)
+
+        qkv = self.to_qkv(x).chunk(3, dim=-1)
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.heads), qkv)
+
+        # Get only the active heads
+        q, k, v = self.get_active_heads(q, k, v, active_heads)
+
+        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+
+        attn = self.attend(dots)
+        attn = self.dropout(attn)
+
+        out = torch.matmul(attn, v)
+        out = rearrange(out, 'b h n d -> b n (h d)')
+        return self.to_out(out)
+    
+class DynamicFeedForward(nn.Module):
+    def __init__(self, dim, width_mult, activation, dropout=0.):
+        super().__init__()
+        self.dim = dim
+        self.width_mult = width_mult
+
+        self.norm1 = nn.LayerNorm(dim)
+        self.uplinear = nn.Linear(dim, dim * width_mult, bias=True)
+
+        if activation == 'relu':
+            self.act = nn.ReLU()
+        elif activation == 'gelu':
+            self.act = nn.GELU()
+
+        self.drop1 = nn.Dropout(dropout)
+        self.downlinear = nn.Linear(dim * width_mult, dim, bias=True)
+        self.drop2 = nn.Dropout(dropout)
+    
+    def get_active_weights(self, active_width):
+        return (self.uplinear.weight[:, :active_width], 
+                self.downlinear.weight[:active_width, :])
+        
+    def get_active_bias(self, active_width):
+        up_bias = self.uplinear.bias[:active_width]
+        down_bias = self.downlinear.bias
+        return up_bias, down_bias
+
+    def forward(self, x, active_width_mult=None):
+        if active_width_mult is None:
+            active_width_mult = self.width_mult
+        
+        active_width = int(self.dim * active_width_mult)
+        
+        up_weights, down_weights = self.get_active_weights(active_width)
+        up_bias, down_bias = self.get_active_bias(active_width)
+
+        x = self.norm1(x)
+        x = F.linear(x, up_weights, up_bias)
+        x = self.act(x)
+        x = self.drop1(x)
+        x = F.linear(x, down_weights, down_bias)
+        x = self.drop2(x)
+        return x
+    
 class DynamicLinear(nn.Module):
     def __init__(self, max_in_features, max_out_features, bias=True):
         super(DynamicLinear, self).__init__()
