@@ -8,15 +8,17 @@ in `./_utils/worker.py`.
 import threading
 import itertools
 import warnings
+import queue
 import multiprocessing as python_multiprocessing
 import torch
 import torch.multiprocessing as multiprocessing
 from torch._utils import ExceptionWrapper
-from torch.multiprocessing import Queue as queue
-from torch._six import string_classes
+from torch.multiprocessing import Queue
 from torch.utils.data.dataset import IterableDataset
 from torch.utils.data import Sampler, SequentialSampler, RandomSampler, BatchSampler
 from torch.utils.data import _utils
+
+string_classes = str
 
 from .my_data_worker import worker_loop
 
@@ -800,7 +802,7 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
 
         if self._pin_memory:
             self._pin_memory_thread_done_event = threading.Event()
-            self._data_queue = queue.Queue()
+            self._data_queue = Queue()
             pin_memory_thread = threading.Thread(
                 target=_utils.pin_memory._pin_memory_loop,
                 args=(
@@ -808,6 +810,7 @@ class _MultiProcessingDataLoaderIter(_BaseDataLoaderIter):
                     self._data_queue,
                     torch.cuda.current_device(),
                     self._pin_memory_thread_done_event,
+                    torch.device("cuda")
                 ),
             )
             pin_memory_thread.daemon = True

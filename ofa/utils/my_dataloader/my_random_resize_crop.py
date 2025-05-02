@@ -9,15 +9,19 @@ import torchvision.transforms as transforms
 
 __all__ = ["MyRandomResizedCrop", "MyResizeRandomCrop", "MyResize"]
 
-_pil_interpolation_to_str = {
-    Image.NEAREST: "PIL.Image.NEAREST",
-    Image.BILINEAR: "PIL.Image.BILINEAR",
-    Image.BICUBIC: "PIL.Image.BICUBIC",
-    Image.LANCZOS: "PIL.Image.LANCZOS",
-    Image.HAMMING: "PIL.Image.HAMMING",
-    Image.BOX: "PIL.Image.BOX",
-}
+# _pil_interpolation_to_str = {
+#     Image.NEAREST: "PIL.Image.NEAREST",
+#     Image.BILINEAR: "PIL.Image.BILINEAR",
+#     Image.BICUBIC: "PIL.Image.BICUBIC",
+#     Image.LANCZOS: "PIL.Image.LANCZOS",
+#     Image.HAMMING: "PIL.Image.HAMMING",
+#     Image.BOX: "PIL.Image.BOX",
+# }
 
+
+_pil_interpolation_to_str = {
+    transforms.InterpolationMode.BILINEAR: "InterpolationMode.BILINEAR",
+}
 
 class MyRandomResizedCrop(transforms.RandomResizedCrop):
     ACTIVE_SIZE = 224
@@ -83,6 +87,7 @@ class MyRandomResizedCrop(transforms.RandomResizedCrop):
         )[0]
 
     def __repr__(self):
+        print('interpolation:', self.interpolation)
         interpolate_str = _pil_interpolation_to_str[self.interpolation]
         format_string = self.__class__.__name__ + "(size={0}".format(
             MyRandomResizedCrop.IMAGE_SIZE_LIST

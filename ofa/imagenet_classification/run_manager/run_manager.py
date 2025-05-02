@@ -54,7 +54,7 @@ class RunManager:
             self.device = torch.device("cpu")
         # initialize model (default)
         if init:
-            init_models(run_config.model_init)
+            init_models(net, run_config.model_init)
 
         # net info
         net_info = get_net_info(
