@@ -1,16 +1,13 @@
 import random
 
 from ofa.imagenet_classification.elastic_nn.modules.dynamic_layers import (
-    DinamicLinearMapper,
+    DynamicLinearMapper,
     DynamicCLSToken,
     DynamicPositionalEmbedding,
-)
-from ofa.imagenet_classification.elastic_nn.modules.dynamic_layers import (
-    DynamicTransfromerBlock,
+    DynamicTransformerBlock,
 )
 from ofa.utils.layers import SimpleLinearLayer
 from ofa.imagenet_classification.networks import ViT
-from ofa.utils import make_divisible, val2list, MyNetwork
 
 __all__ = ["OFAViT"]
 
@@ -18,31 +15,55 @@ __all__ = ["OFAViT"]
 class OFAViT(ViT):
     def __init__(
         self,
-        image_size=224,
         n_classes=1000,
-        dim=16,
         dropout_rate=0,
-        dim_heads=16,
+        image_size=32,
+        dim=128,
+        dim_heads=24,
         act_func="gelu",
+        heads_list=None,
+        width_mult_ratio_list=None,
+        depth_list=None,
     ):
+        self.classes = n_classes
+        self.image_size = image_size
+        self.dim = dim
+        self.dim_heads = dim_heads
+        self.act_func = act_func
 
-        self.heads_list = [2, 4, 8, 16]
-        self.depth_list = [2, 3, 4, 5, 6]
-        self.width_mult_list = [2, 4, 8, 16]
-        #self.patch_size_list =[2, 4, 8, 14, 16, 28, 56, 112] # with image_size = 224
+        if heads_list is None:
+            heads_list = [2, 4, 8, 16]
+        if width_mult_ratio_list is None:
+            width_mult_ratio_list = [2, 4, 8]
+        if depth_list is None:
+            depth_list = [2, 3, 4, 5, 6]
+        if image_size == 32:
+            patch_size_list = [2, 4, 8, 16]
+        elif image_size == 224:
+            patch_size_list = [2, 4, 8, 14, 16, 28, 56, 112]
+
+
+        self.heads_list = heads_list
+        self.width_mult_list = width_mult_ratio_list
+        self.depth_list = depth_list
+        self.patch_size_list = [2, 4, 8, 16]
 
         # max
         self.max_heads = max(self.heads_list)
         self.max_depth = max(self.depth_list)
         self.max_width_mult = max(self.width_mult_list)
-        self.max_patch_size = max(self.patch_size_list)
+        self.max_patch_size = max(patch_size_list)
+
+        self.active_patch_size = 4
+
+        self.active_depth = self.max_depth
 
         # build input stem
         input_stem = [
-            DinamicLinearMapper(
+            DynamicLinearMapper(
                 dim,
                 image_size,
-                self.max_patch_size,
+                self.active_patch_size,
             ),
             DynamicCLSToken(
                 dim,
@@ -50,15 +71,14 @@ class OFAViT(ViT):
             DynamicPositionalEmbedding(
                 dim,
                 image_size,
-                self.max_patch_size,
+                self.active_patch_size,
             ),
         ]
 
         # blocks
         blocks = []
         for _ in range(self.max_depth):
-            transformer_block = DynamicTransfromerBlock(
-                self,
+            transformer_block = DynamicTransformerBlock(
                 dim,
                 self.max_heads,
                 dim_heads,
@@ -75,94 +95,105 @@ class OFAViT(ViT):
 
         super(OFAViT, self).__init__(input_stem, blocks, classifier)
 
+    """ MyNetwork required methods """
+
     @staticmethod
     def name():
         return "OFAViT"
 
     def forward(self, x, active_heads = None, active_width_mult = None, active_depth = None):
         if active_depth is None:
-            active_depth = self.max_depth
+            active_depth = self.active_depth
 
         for layer in self.input_stem:
             x = layer(x)
         for block in self.blocks[:active_depth]:
             x = block(x, active_heads, active_width_mult)
+        x = x[:, 0, :]
         x = self.classifier(x)
         return x
+    
+    @property
+    def module_str(self):
+        _str = ""
+        for layer in self.input_stem:
+            if hasattr(layer, 'module_str'):
+                _str += layer.module_str + "\n"
+            else:
+                _str += str(layer) + "\n"
+        
+        _str += str(self.active_depth) + "x"
+        if hasattr(self.blocks, 'module_str'):
+            _str += self.blocks.module_str + "\n"
+        else:
+            _str += str(self.blocks) + "\n"
+        
+        if hasattr(self.classifier, 'module_str'):
+            _str += self.classifier.module_str
+        else:
+            _str += str(self.classifier)
+        
+        return _str
+    
+    # @property
+    # def module_str(self):
+    #     print("Input stem types:", [type(layer) for layer in self.input_stem])
+    #     print("Blocks types:", [type(block) for block in self.blocks])
+    #     print("Classifier type:", type(self.classifier))
+    #     _str = ""
+    #     for layer in self.input_stem:
+    #         _str += layer.module_str + "\n"
+    #     for layer in self.blocks[:self.active_depth]:
+    #         _str += self.blocks.module_str + "\n"
+    #     _str += self.classifier.module_str
+    #     return _str
 
+    @property
+    def config(self):
+        return {
+            "name": OFAViT.__name__,
+            "input_stem": [layer.config for layer in self.input_stem],
+            "blocks": [block.config for block in self.blocks],
+            "classifier": self.classifier.config,
+        }
+    
+    @staticmethod
+    def build_from_config(config):
+        raise ValueError("do not support this function")
+    
 
     """ set, sample and get active sub-networks """
-    '''
-    def set_active_subnet(self, d=None, e=None, w=None, **kwargs):
-        depth = val2list(d, len(ViT.BASE_DEPTH_LIST) + 1)
-        expand_ratio = val2list(e, len(self.blocks))
-        width_mult = val2list(w, len(ViT.BASE_DEPTH_LIST) + 2)
 
-        for block, e in zip(self.blocks, expand_ratio):
-            if e is not None:
-                block.active_expand_ratio = e
+    def set_active_subnet(self, d=None, wm=None, h=None, **kwargs):
+        for block in self.blocks:
+            block.attention.active_heads = h
+            block.attention.to_out.active_in_feature = h * self.dim_heads
+            block.feedforward.active_width_mult = wm
 
-        if width_mult[0] is not None:
-            self.input_stem[1].conv.active_out_channel = self.input_stem[
-                0
-            ].active_out_channel = self.input_stem[0].out_channel_list[width_mult[0]]
-        if width_mult[1] is not None:
-            self.input_stem[2].active_out_channel = self.input_stem[2].out_channel_list[
-                width_mult[1]
-            ]
+        self.active_depth = d
 
-        if depth[0] is not None:
-            self.input_stem_skipping = depth[0] != max(self.depth_list)
-        for stage_id, (block_idx, d, w) in enumerate(
-            zip(self.grouped_block_index, depth[1:], width_mult[2:])
-        ):
-            if d is not None:
-                self.runtime_depth[stage_id] = max(self.depth_list) - d
-            if w is not None:
-                for idx in block_idx:
-                    self.blocks[idx].active_out_channel = self.blocks[
-                        idx
-                    ].out_channel_list[w]
-    '''
-                    
+
     def sample_active_subnet(self):
         heads_candidates = self.heads_list
         width_mult_candidates = self.width_mult_list
         depth_candidates = self.depth_list
 
-        # sample kernel size
-        heads_setting = []
-        if not isinstance(heads_candidates[0], list):
-            heads_candidates = [heads_candidates for _ in range(len(self.blocks) - 1)]
-        for k_set in heads_candidates:
-            k = random.choice(k_set)
-            heads_setting.append(k)
+        # Sample random values correctly
+        h = random.choice(heads_candidates) 
+        w = random.choice(width_mult_candidates)
+        d = random.choice(depth_candidates)
 
-        # sample expand ratio
-        width_mult_setting = []
-        if not isinstance(width_mult_candidates[0], list):
-            width_mult_candidates = [width_mult_candidates for _ in range(len(self.blocks) - 1)]
-        for e_set in width_mult_candidates:
-            e = random.choice(e_set)
-            width_mult_setting.append(e)
-
-        # sample depth
-        depth_setting = []
-        if not isinstance(depth_candidates[0], list):
-            depth_candidates = [
-                depth_candidates for _ in range(len(self.block_group_info))
-            ]
-        for d_set in depth_candidates:
-            d = random.choice(d_set)
-            depth_setting.append(d)
-
-        self.set_active_subnet(heads_setting, width_mult_setting, depth_setting)
+        self.set_active_subnet(d=d, wm=w, h=h) 
 
         return {
-            "h": heads_setting,
-            "wm": width_mult_setting,
-            "d": depth_setting,
+            "d": d,
+            "wm": w,
+            "h": h,
         }
+    
+    # def load_state_dict(self, state_dict, **kwargs):
+    #     super(OFAViT, self).load_state_dict(state_dict)
+
 '''
     def get_active_subnet(self, preserve_weight=True):
         input_stem = [self.input_stem[0].get_active_subnet(3, preserve_weight)]

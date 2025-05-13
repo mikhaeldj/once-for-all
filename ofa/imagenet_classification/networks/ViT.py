@@ -9,32 +9,22 @@ from ofa.utils.layers import (
 from ofa.utils.layers import ResNetBottleneckBlock, ResidualBlock
 from ofa.utils import make_divisible, MyNetwork, MyGlobalAvgPool2d
 
-__all__ = ["ViT", "ResNet50", "ResNet50D"]
+__all__ = ["ViT"]
 
 
 class ViT(MyNetwork):
-
-    BASE_DEPTH_LIST = [2, 2, 4, 2]
-    STAGE_WIDTH_LIST = [256, 512, 1024, 2048]
-
     def __init__(self, input_stem, blocks, classifier):
         super(ViT, self).__init__()
 
         self.input_stem = nn.ModuleList(input_stem)
-        self.max_pooling = nn.MaxPool2d(
-            kernel_size=3, stride=2, padding=1, dilation=1, ceil_mode=False
-        )
         self.blocks = nn.ModuleList(blocks)
-        self.global_avg_pool = MyGlobalAvgPool2d(keep_dim=False)
         self.classifier = classifier
 
     def forward(self, x):
         for layer in self.input_stem:
             x = layer(x)
-        x = self.max_pooling(x)
         for block in self.blocks:
             x = block(x)
-        x = self.global_avg_pool(x)
         x = self.classifier(x)
         return x
 
@@ -43,10 +33,8 @@ class ViT(MyNetwork):
         _str = ""
         for layer in self.input_stem:
             _str += layer.module_str + "\n"
-        _str += "max_pooling(ks=3, stride=2)\n"
-        for block in self.blocks:
-            _str += block.module_str + "\n"
-        _str += self.global_avg_pool.__repr__() + "\n"
+        for layer in self.blocks[:self.active_depth]:
+            _str += self.blocks.module_str + "\n"
         _str += self.classifier.module_str
         return _str
 
@@ -104,147 +92,3 @@ class ViT(MyNetwork):
 
     def load_state_dict(self, state_dict, **kwargs):
         super(ViT, self).load_state_dict(state_dict)
-
-
-class ResNet50(ViT):
-    def __init__(
-        self,
-        n_classes=1000,
-        width_mult=1.0,
-        bn_param=(0.1, 1e-5),
-        dropout_rate=0,
-        expand_ratio=None,
-        depth_param=None,
-    ):
-
-        expand_ratio = 0.25 if expand_ratio is None else expand_ratio
-
-        input_channel = make_divisible(64 * width_mult, MyNetwork.CHANNEL_DIVISIBLE)
-        stage_width_list = ViT.STAGE_WIDTH_LIST.copy()
-        for i, width in enumerate(stage_width_list):
-            stage_width_list[i] = make_divisible(
-                width * width_mult, MyNetwork.CHANNEL_DIVISIBLE
-            )
-
-        depth_list = [3, 4, 6, 3]
-        if depth_param is not None:
-            for i, depth in enumerate(ViT.BASE_DEPTH_LIST):
-                depth_list[i] = depth + depth_param
-
-        stride_list = [1, 2, 2, 2]
-
-        # build input stem
-        input_stem = [
-            ConvLayer(
-                3,
-                input_channel,
-                kernel_size=7,
-                stride=2,
-                use_bn=True,
-                act_func="relu",
-                ops_order="weight_bn_act",
-            )
-        ]
-
-        # blocks
-        blocks = []
-        for d, width, s in zip(depth_list, stage_width_list, stride_list):
-            for i in range(d):
-                stride = s if i == 0 else 1
-                bottleneck_block = ResNetBottleneckBlock(
-                    input_channel,
-                    width,
-                    kernel_size=3,
-                    stride=stride,
-                    expand_ratio=expand_ratio,
-                    act_func="relu",
-                    downsample_mode="conv",
-                )
-                blocks.append(bottleneck_block)
-                input_channel = width
-        # classifier
-        classifier = LinearLayer(input_channel, n_classes, dropout_rate=dropout_rate)
-
-        super(ResNet50, self).__init__(input_stem, blocks, classifier)
-
-        # set bn param
-        self.set_bn_param(*bn_param)
-
-
-class ResNet50D(ViT):
-    def __init__(
-        self,
-        n_classes=1000,
-        width_mult=1.0,
-        bn_param=(0.1, 1e-5),
-        dropout_rate=0,
-        expand_ratio=None,
-        depth_param=None,
-    ):
-
-        expand_ratio = 0.25 if expand_ratio is None else expand_ratio
-
-        input_channel = make_divisible(64 * width_mult, MyNetwork.CHANNEL_DIVISIBLE)
-        mid_input_channel = make_divisible(
-            input_channel // 2, MyNetwork.CHANNEL_DIVISIBLE
-        )
-        stage_width_list = ViT.STAGE_WIDTH_LIST.copy()
-        for i, width in enumerate(stage_width_list):
-            stage_width_list[i] = make_divisible(
-                width * width_mult, MyNetwork.CHANNEL_DIVISIBLE
-            )
-
-        depth_list = [3, 4, 6, 3]
-        if depth_param is not None:
-            for i, depth in enumerate(ViT.BASE_DEPTH_LIST):
-                depth_list[i] = depth + depth_param
-
-        stride_list = [1, 2, 2, 2]
-
-        # build input stem
-        input_stem = [
-            ConvLayer(3, mid_input_channel, 3, stride=2, use_bn=True, act_func="relu"),
-            ResidualBlock(
-                ConvLayer(
-                    mid_input_channel,
-                    mid_input_channel,
-                    3,
-                    stride=1,
-                    use_bn=True,
-                    act_func="relu",
-                ),
-                IdentityLayer(mid_input_channel, mid_input_channel),
-            ),
-            ConvLayer(
-                mid_input_channel,
-                input_channel,
-                3,
-                stride=1,
-                use_bn=True,
-                act_func="relu",
-            ),
-        ]
-
-        # blocks
-        blocks = []
-        for d, width, s in zip(depth_list, stage_width_list, stride_list):
-            for i in range(d):
-                stride = s if i == 0 else 1
-                bottleneck_block = ResNetBottleneckBlock(
-                    input_channel,
-                    width,
-                    kernel_size=3,
-                    stride=stride,
-                    expand_ratio=expand_ratio,
-                    act_func="relu",
-                    downsample_mode="avgpool_conv",
-                )
-                blocks.append(bottleneck_block)
-                input_channel = width
-        # classifier
-        classifier = LinearLayer(input_channel, n_classes, dropout_rate=dropout_rate)
-
-        super(ResNet50D, self).__init__(input_stem, blocks, classifier)
-
-        # set bn param
-        self.set_bn_param(*bn_param)

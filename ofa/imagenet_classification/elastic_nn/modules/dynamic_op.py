@@ -385,6 +385,7 @@ class DynamicLinear(nn.Module):
 
         self.linear = nn.Linear(self.max_in_features, self.max_out_features, self.bias)
 
+        self.active_in_features = self.max_in_features
         self.active_out_features = self.max_out_features
 
     def get_active_weight(self, out_features, in_features):
@@ -393,11 +394,18 @@ class DynamicLinear(nn.Module):
     def get_active_bias(self, out_features):
         return self.linear.bias[:out_features] if self.bias else None
 
-    def forward(self, x, out_features=None):
+    def forward(self, x, out_features=None, in_features=None):
+        # print("in_features: ", self.active_in_features)
+        # print("out_features: ", self.active_out_features)
+        # print("x_shape: ", x.shape)
+
+        if in_features is None:
+            in_features = self.active_in_features
         if out_features is None:
             out_features = self.active_out_features
 
-        in_features = x.size(1)
+        
+        #in_features = x.size(1)
         weight = self.get_active_weight(out_features, in_features).contiguous()
         bias = self.get_active_bias(out_features)
         y = F.linear(x, weight, bias)
@@ -405,10 +413,10 @@ class DynamicLinear(nn.Module):
 
 
 class DynamicAttention(nn.Module):
-    def __init__(self, dim, heads, dim_head, dropout=0.0):
+    def __init__(self, heads, dim, dim_head, dropout=0.0):
         super(DynamicAttention, self).__init__()
         inner_dim = dim_head * heads
-        project_out = not (heads == 1 and dim_head == dim)
+        #project_out = not (heads == 1 and dim_head == dim)
 
         self.dim = dim
         self.heads = heads
@@ -422,10 +430,15 @@ class DynamicAttention(nn.Module):
 
         self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
 
-        self.to_out = nn.Sequential(
-            nn.Linear(inner_dim, dim),
-            nn.Dropout(dropout)
-        ) if project_out else nn.Identity()
+        self.to_out = nn.Linear(inner_dim, dim)
+        self.dropout2 = nn.Dropout(dropout)
+
+        # self.to_out = nn.Sequential(
+        #     DynamicLinear(inner_dim, dim),
+        #     nn.Dropout(dropout)
+        # ) if project_out else nn.Identity()
+
+        self.active_heads = self.heads
 
     def get_active_heads(self, q, k, v, active_heads):
         # Select only the active heads
@@ -434,9 +447,13 @@ class DynamicAttention(nn.Module):
         v = v[:, :active_heads, :, :]
         return q, k, v
     
+    def get_active_weights(self, active_heads):
+        active_inner_dim = active_heads * self.dim_head
+        return self.to_out.weight[:self.dim, :active_inner_dim]
+    
     def forward(self, x, active_heads=None):
         if active_heads is None:
-            active_heads = self.heads
+            active_heads = self.active_heads
 
         x = self.norm(x)
 
@@ -453,11 +470,22 @@ class DynamicAttention(nn.Module):
 
         out = torch.matmul(attn, v)
         out = rearrange(out, 'b h n d -> b n (h d)')
-        return self.to_out(out)
 
+        weights = self.get_active_weights(active_heads)
+
+        out = F.linear(out, weights, self.to_out.bias[:self.dim])
+        out = self.dropout2(out)
+
+        return out
+    
+    @property
+    def module_str(self):
+        return "DynamicAttention(heads=%d, dim=%d, dim_head=%d)" % (
+            self.active_heads, self.dim, self.dim_head
+        )
  
 class DynamicFeedForward(nn.Module):
-    def __init__(self, dim, width_mult, activation, dropout=0.):
+    def __init__(self, width_mult, dim, activation, dropout=0.):
         super().__init__()
         self.dim = dim
         self.width_mult = width_mult
@@ -473,10 +501,12 @@ class DynamicFeedForward(nn.Module):
         self.drop1 = nn.Dropout(dropout)
         self.downlinear = nn.Linear(dim * width_mult, dim, bias=True)
         self.drop2 = nn.Dropout(dropout)
+
+        self.active_width_mult = self.width_mult
     
     def get_active_weights(self, active_width):
-        return (self.uplinear.weight[:, :active_width], 
-                self.downlinear.weight[:active_width, :])
+        return (self.uplinear.weight[:active_width, :], 
+                self.downlinear.weight[:, :active_width])
         
     def get_active_bias(self, active_width):
         up_bias = self.uplinear.bias[:active_width]
@@ -485,7 +515,7 @@ class DynamicFeedForward(nn.Module):
 
     def forward(self, x, active_width_mult=None):
         if active_width_mult is None:
-            active_width_mult = self.width_mult
+            active_width_mult = self.active_width_mult
         
         active_width = int(self.dim * active_width_mult)
         
@@ -499,3 +529,9 @@ class DynamicFeedForward(nn.Module):
         x = F.linear(x, down_weights, down_bias)
         x = self.drop2(x)
         return x
+    
+    @property
+    def module_str(self):
+        return "DynamicFeedForward(width_mult=%.2f, dim=%d)" % (
+            self.active_width_mult, self.dim
+        )

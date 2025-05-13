@@ -5,6 +5,7 @@
 from .proxyless_nets import *
 from .mobilenet_v3 import *
 from .resnets import *
+from .ViT import *
 
 
 def get_net_by_name(name):
@@ -14,5 +15,7 @@ def get_net_by_name(name):
         return MobileNetV3
     elif name == ResNets.__name__:
         return ResNets
+    elif name == ViT.__name__:
+        return ViT
     else:
         raise ValueError("unrecognized type of network: %s" % name)

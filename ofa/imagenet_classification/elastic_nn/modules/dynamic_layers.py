@@ -23,7 +23,7 @@ from ofa.utils import (
     SEModule,
     MyNetwork,
 )
-from .dynamic_op import (
+from ofa.imagenet_classification.elastic_nn.modules.dynamic_op import (
     DynamicSeparableConv2d,
     DynamicConv2d,
     DynamicBatchNorm2d,
@@ -44,10 +44,10 @@ __all__ = [
     "DynamicConvLayer",
     "DynamicLinearLayer",
     "DynamicResNetBottleneckBlock",
-    "DinamicLinearMapper",
+    "DynamicLinearMapper",
     "DynamicCLSToken",
     "DynamicPositionalEmbedding",
-    "DynamicTransfromerBlock"
+    "DynamicTransformerBlock"
 ]
 
 
@@ -850,14 +850,14 @@ class DynamicResNetBottleneckBlock(MyModule):
         return None
     
 
-class DinamicLinearMapper(MyModule):
+class DynamicLinearMapper(MyModule):
     def __init__(
         self,
         max_dim,
         image_size,
         patch_size,
     ):
-        super(DinamicLinearMapper, self).__init__()
+        super(DynamicLinearMapper, self).__init__()
 
         patch_dim = 3 * patch_size * patch_size
 
@@ -865,14 +865,7 @@ class DinamicLinearMapper(MyModule):
         self.image_size = image_size
         self.patch_size = patch_size
 
-        # self.patchify = nn.Sequential(
-        #     rearrange('b c (h p) (w p) -> b (h w) (p p c)', p = patch_size),
-        #     nn.LayerNorm(patch_dim),
-        #     nn.Linear(patch_dim, dim),
-        #     nn.LayerNorm(dim),
-        # )
-
-        self.rearrange = rearrange('b c (h p) (w p) -> b (h w) (p p c)', p = patch_size)
+        self.rearrange = Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = patch_size, p2 = patch_size)
         self.norm = nn.LayerNorm(patch_dim)
         self.linear = DynamicLinear(patch_dim, max_dim)
         self.norm_out = nn.LayerNorm(max_dim)
@@ -883,6 +876,10 @@ class DinamicLinearMapper(MyModule):
         x = self.linear(x)
         x = self.norm_out(x)
         return x
+    
+    @property
+    def module_str(self):
+        return "DyLinearMapper(%d, %d, %d)" % (self.dim, self.image_size, self.patch_size)
     
 class DynamicCLSToken(MyModule):
     def __init__(
@@ -899,6 +896,10 @@ class DynamicCLSToken(MyModule):
         cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b=batch_size)
         x = torch.cat((cls_tokens, x), dim=1)
         return x
+    
+    @property
+    def module_str(self):
+        return "DyCLSToken(%d)" % (self.dim)
     
 class DynamicPositionalEmbedding(MyModule):
     def __init__(
@@ -920,8 +921,12 @@ class DynamicPositionalEmbedding(MyModule):
     def forward(self, x):
         x = x + self.pos_embedding[:, :self.num_patches]
         return x
+    
+    @property
+    def module_str(self):
+        return "DyPositionalEmbedding(%d, %d, %d)" % (self.dim, self.image_size, self.patch_size)
 
-class DynamicTransfromerBlock(MyModule):
+class DynamicTransformerBlock(MyModule):
     def __init__(
         self,
         dim,
@@ -931,7 +936,7 @@ class DynamicTransfromerBlock(MyModule):
         dropout = 0.,
         act_func = 'gelu',
     ):
-        super(DynamicTransfromerBlock, self).__init__()
+        super(DynamicTransformerBlock, self).__init__()
 
         self.dim = dim
         self.heads = heads
@@ -941,11 +946,22 @@ class DynamicTransfromerBlock(MyModule):
 
         self.norm = nn.LayerNorm(dim)
         
-        self.attention = DynamicAttention(dim, heads = heads, dim_head = dim_head, dropout = dropout),
-        self.feedforward = DynamicFeedForward(dim, width_mult, act_func, dropout = dropout)
+        self.attention = DynamicAttention(heads, dim, dim_head, dropout = dropout)
+        self.feedforward = DynamicFeedForward(width_mult, dim, act_func, dropout = dropout)
+
+        self.residual1 = nn.Identity()
+        self.residual2 = nn.Identity()
         
     def forward(self, x, active_heads = None, active_width_mult = None):
-        x = self.attention(x, active_heads)
-        x = self.feedforward(x, active_width_mult)
+        x = self.attention(x, active_heads) + self.residual1(x)
+        x = self.feedforward(x, active_width_mult) + self.residual2(x)
         return self.norm(x)
+    
+    @property
+    def module_str(self):
+        _str = ""
+        _str += "DyTransformerBlock [\n"
+        _str += "    " + self.attention.module_str + "\n"
+        _str += "    " + self.feedforward.module_str + "]"
+        return _str
     

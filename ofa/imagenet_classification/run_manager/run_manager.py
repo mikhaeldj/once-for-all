@@ -54,7 +54,7 @@ class RunManager:
             self.device = torch.device("cpu")
         # initialize model (default)
         if init:
-            init_models(run_config.model_init)
+            init_models(net, run_config.model_init)
 
         # net info
         net_info = get_net_info(
@@ -367,14 +367,14 @@ class RunManager:
                 if args.teacher_model is None:
                     loss_type = "ce"
                 else:
-                    if args.kd_type == "ce":
-                        kd_loss = cross_entropy_loss_with_soft_target(
+                    if args.heads_type == "ce":
+                        heads_loss = cross_entropy_loss_with_soft_target(
                             output, soft_label
                         )
                     else:
-                        kd_loss = F.mse_loss(output, soft_logits)
-                    loss = args.kd_ratio * kd_loss + loss
-                    loss_type = "%.1fkd+ce" % args.kd_ratio
+                        heads_loss = F.mse_loss(output, soft_logits)
+                    loss = args.heads_ratio * heads_loss + loss
+                    loss_type = "%.1fheads+ce" % args.heads_ratio
 
                 # compute gradient and do SGD step
                 self.net.zero_grad()  # or self.optimizer.zero_grad()

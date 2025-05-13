@@ -837,3 +837,7 @@ class SimpleLinearLayer(MyModule):
         if self.dropout is not None:
             x = self.dropout(x)
         return self.linear(x)
+    
+    @property
+    def module_str(self):
+        return "%dx%d_Linear" % (self.max_in_features, self.out_features)
